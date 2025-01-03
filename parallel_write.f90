@@ -1,7 +1,7 @@
 !
 ! Use MPI-IO to write a diagonal matrix distributed block-cyclically,
 !
-program darraympiio
+program blockCyclicWrite
   use mpi
   implicit none
 
@@ -10,8 +10,10 @@ program darraympiio
   real(dp), dimension(:), allocatable :: buff ! buffer
   real(dp) :: rTmp
 
-  integer, external :: numroc ! blacs routine
-  integer :: procs, prow, pcol ! blacs data
+  integer, external :: numroc, indxl2g ! blacs and ScaLAPACK routines
+  ! blacs data
+  integer :: me, procs, prow, pcol, buffRows, buffCols, iContxt, myCol, myRow
+  integer :: iRow, iCol, iGlobRow, iGlobCol
 
   character(12) :: filename = "testdat.bin"
   integer :: mpirank
@@ -23,7 +25,7 @@ program darraympiio
   integer :: locsize, nelements
   integer(kind=MPI_ADDRESS_KIND) :: lb, locextent
   integer(kind=MPI_OFFSET_KIND) :: disp
-  integer :: ii
+  integer :: ii, isrcproc
 
   n = 27
 
@@ -32,21 +34,21 @@ program darraympiio
   call MPI_Comm_size(MPI_COMM_WORLD, procs, ierr)
   call MPI_Comm_rank(MPI_COMM_WORLD, mpirank, ierr)
 
-
   ! May as well get the process grid from MPI_Dims_create
   pdims = 0
   call MPI_Dims_create(procs, 2, pdims, ierr)
   prow = pdims(1)
   pcol = pdims(2)
 
-  ! read size of array from first file entry
+  ! write size of array as first file entry as an MPI_INTEGER
   call MPI_File_open(MPI_COMM_WORLD, filename, MPI_MODE_CREATE + MPI_MODE_WRONLY, MPI_INFO_NULL,&
       & fh, ierr)
   call MPI_File_write_all(fh, n, 1, MPI_INTEGER, mpistatus, ierr)
   call MPI_File_close(fh, ierr)
 
-  ! create the darray that will be passed to write the data.
-  nb = 4 ! small
+  ! create the block cyclice darray that will hold the data
+  nb = 4 ! small block size
+  ! decrease block to put something on all processors
   if (nb > (N/prow)) nb = N/prow
   if (nb > (N/pcol)) nb = N/pcol
   dims = [n,n]
@@ -61,9 +63,26 @@ program darraympiio
 
   ! Initialize local arrays
   nelements = locsize / sizeof(rTmp)
+
+  ! Initialize blacs processor grid
+  call blacs_pinfo   (me, procs)
+  call blacs_get(-1, 0, icontxt)
+  call blacs_gridinit(icontxt, 'R', prow, pcol)
+  call blacs_gridinfo(icontxt, prow, pcol, myrow, mycol)
+  buffRows = numroc(n, nb, myrow, 0, prow)
+  buffCols = numroc(n, nb, mycol, 0, pcol)
+
+  write(*,*)buffRows, buffCols, mpirank
+
   allocate(buff(nelements))
-  do ii = 1, nElements
-    buff(ii) = ii + mpirank * 10000
+  ii = 1
+  do iCol = 1, buffCols
+    iGlobCol = indxl2g (iCol, nb, mpirank, isrcproc, procs)
+    do iRow = 1, buffRows
+      iGlobRow = indxl2g (iRow, nb, mpirank, isrcproc, procs)
+      buff(ii) = iGlobRow !+ (iGlobCol-1) * n
+      ii = ii + 1
+    end do
   end do
 
   ! write the data
@@ -80,4 +99,4 @@ program darraympiio
   ! End blacs for processors that are used
   call MPI_Finalize(ierr)
 
-end program darraympiio
+end program blockCyclicWrite
